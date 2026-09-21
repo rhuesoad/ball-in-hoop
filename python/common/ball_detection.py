@@ -2,18 +2,13 @@
 """
 ball_detection.py -- Portage fidele du detecteur AA4CC + mesure de latence
 
-Reproduit le pipeline de detection de github.com/aa4cc/raspi-ballpos
-(detector.py, classes ObjectDetector / BallDetector), utilise par le banc
-"ball in double hoop" de Gurtner & Zemanek (CTU Prague) a 50 Hz sur un
-Raspberry Pi 3B+.
-
-PIPELINE (identique a la source)
+PIPELINE 
 --------------------------------
     1. Combinaison lineaire des canaux -> image scalaire uint8 :
            im = clip(c0*ch0 + c1*ch1 + c2*ch2, 0, 255)
-    2. Masque optionnel
+    2. Masque 
     3. Seuillage : cv2.inRange(im, threshold, 255)
-    4. Erosion optionnelle
+    4. Erosion optionnelle (à checker)
     5. cv2.moments -> centroide (m10/m00, m01/m00)
        Validation de l'aire via m00 (sur image binaire 0/255, m00 = aire*255)
 
@@ -23,42 +18,6 @@ processImage(image) : recherche en deux etages
     b. Fenetre `tracking_window` centree sur le resultat grossier,
        a pleine resolution -> recherche fine
     c. Transformation des coordonnees ROI -> image complete
-
-DIFFERENCES ASSUMEES PAR RAPPORT A LA SOURCE
---------------------------------------------
-1. ORDRE DES CANAUX. AA4CC utilise PiCamera v1, dont les tableaux sont en
-   RGB : leur color_coefs rouge est [1, -0.5, -0.5] (canal 0 = R).
-   picamera2 en format "RGB888" restitue les tableaux en BGR (quirk
-   documente, c'est ce qu'attend OpenCV). L'equivalent strict est donc
-   [-0.5, -0.5, 1]. Meme calcul, meme resultat.
-
-2. BUG CORRIGE. Leur ligne de masquage lit
-       im = cv2.bitwise_and(im, self.im, mask=mask)
-   or `self.im` n'existe pas -> AttributeError des qu'un masque est fourni
-   (leur config de reference n'en utilise pas, le chemin n'est jamais
-   exerce). Corrige en `cv2.bitwise_and(im, im, mask=mask)`.
-
-3. MODULES C++. Ils disposent d'une variante ObjectDetectorInC appelant un
-   module compile (find_object / Eigen). Ce portage reste en Python/NumPy.
-
-PARAMETRES DE REFERENCE (config.json_sample, detecteur "Red")
--------------------------------------------------------------
-    threshold        110
-    tracking_window   64
-    downsample         8
-    ball_size    [0, 150]  -> aire dans [0, 17671] px^2
-    color_coefs  [1, -0.5, -0.5]  (RGB)  ==  [-0.5, -0.5, 1]  (BGR)
-    resolution   [480, 480]
-    frame_rate        50
-    exposition_time   10 ms
-
-MESURE DE LATENCE
------------------
-Chaque iteration chronometre separement :
-    t_acq   capture de l'image (picam2.capture_array())
-    t_det   detection (process_image())
-    t_loop  total de l'iteration
-Les series completes sont sauvegardees en .npz et resumees a l'ecran.
 
 Usage
 -----
@@ -183,20 +142,6 @@ class BallDetectorAA4CC:
         if store:
             self.images[name + "_thrs"] = im_thrs
 
-        # --- Centroide ---------------------------------------------------
-        # AA4CC calcule ici cv2.moments(im_thrs) sur TOUT le masque, soit le
-        # barycentre global des pixels au-dessus du seuil. C'est valide chez
-        # eux : leur lampe LED dediee eclaire une scene ou aucun autre objet
-        # n'est de la couleur cible.
-        #
-        # Sans cette lampe, le fond du labo laisse passer des taches
-        # Moments -> centroide, avec validation de l'aire.
-        #
-        # Barycentre global de TOUS les pixels au-dessus du seuil, exactement
-        # comme AA4CC. Cela suppose qu'aucun autre objet de la scene n'a la
-        # couleur cible -- chez eux c'est garanti par une lampe LED dediee,
-        # ici par le recadrage automatique sur le hoop (voir detect_hoop_roi)
-        # qui exclut le fond du labo.
         M = cv2.moments(im_thrs)
         if M['m00'] > 0 and (object_size_lim is None or
                              object_size_lim[0] < M['m00'] < object_size_lim[1]):
@@ -284,28 +229,11 @@ class BallDetectorAA4CC:
 # =========================================================================== #
 
 def detect_hoop_roi(image, margin=0.05, verbose=True):
-    """Localise le hoop exterieur et renvoie le rectangle de recadrage.
+    """
+    Localise le hoop exterieur et renvoie le rectangle de recadrage.
 
     Le hoop est fixe dans l'image : cette detection n'est faite qu'une fois,
     au demarrage, et peut donc se permettre d'etre couteuse.
-
-    Interet : confiner la recherche de la balle a l'interieur du hoop. Le
-    barycentre global d'AA4CC suppose qu'aucun autre objet de la scene n'a
-    la couleur cible ; sans lampe dediee, le fond du labo contient des
-    surfaces rougeatres qui faussent ce barycentre. Comme la balle ne peut
-    physiquement pas sortir du hoop, recadrer dessus elimine le probleme
-    sans toucher a l'algorithme de detection.
-
-    Methode : estimation par HoughCircles, puis raffinement du rayon par
-    recherche du gradient maximal le long de rayons issus du centre estime
-    (plus robuste que Hough seul, qui accroche parfois un cercle trop grand).
-
-    Args:
-        image : frame BGR.
-        margin: marge de securite, en fraction du rayon (0.05 = 5 %).
-
-    Returns:
-        (x0, y0, w, h) rectangle de recadrage, borne a l'image.
     """
     h_img, w_img = image.shape[:2]
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -427,22 +355,8 @@ def ball_detection(n_frames=200,
                    warmup_frames=10,
                    debug=False,
                    verbose=True):
-    """Acquiert n_frames, detecte la balle, chronometre chaque etape.
-
-    Args:
-        roi:        (x0, y0, w, h) recadrage fixe. Si None, le hoop est
-                    detecte automatiquement sur la premiere frame.
-        roi_margin: marge du recadrage automatique, en fraction du rayon.
-
-    Returns:
-        dict avec les series temporelles et les positions :
-            t        [s]    horodatage de chaque iteration (depuis le debut)
-            u, v     [px]   position de la balle, en coordonnees IMAGE
-                            COMPLETE (NaN si non detectee)
-            ok       [bool] detection valide
-            t_acq    [ms]   duree de la capture
-            t_det    [ms]   duree de la detection
-            t_loop   [ms]   duree totale de l'iteration
+    """
+    Acquiert n_frames, detecte la balle, chronometre chaque etape.
     """
     picam2 = open_camera(size, fps, exposure_us, analogue_gain)
 
@@ -483,17 +397,13 @@ def ball_detection(n_frames=200,
     if verbose:
         print("[run] acquisition de {} frames...".format(n_frames))
 
-    # perf_counter plutot que time.time : horloge monotone, resolution
-    # nanoseconde, insensible aux ajustements NTP -- indispensable pour
-    # chronometrer des durees de l'ordre de la milliseconde.
     t0 = time.perf_counter()
 
     for i in range(n_frames):
         ta = time.perf_counter()
         frame = picam2.capture_array()
         tb = time.perf_counter()
-        # Recadrage sur le hoop : la balle ne peut pas en sortir, et cela
-        # exclut le fond du labo qui fausserait le barycentre global.
+      
         loc = det.process_image(frame[ry:ry + rh, rx:rx + rw])
         tc = time.perf_counter()
 
