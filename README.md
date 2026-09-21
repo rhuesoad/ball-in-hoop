@@ -50,8 +50,3 @@ and the printed parts in `cad/`.
   guarantee the ball clears the edge.
 - ** Hardware **: There is a play on the connection piece. Try to start from there
    to try to get better results on the looping itself. 
-
-## License
-
-No license yet. `cad/lib/nutsnbolts.scad` is a third-party library by Johannes
-Kneer under GPLv3; its notice is kept in the file.
