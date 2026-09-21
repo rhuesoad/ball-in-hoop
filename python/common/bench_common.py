@@ -1,42 +1,9 @@
 """
 bench_common_v3.py -- Briques communes a T1 (regulation) et T2 (poursuite).
 
-1. TRAFIC USB 
+REMARQUE: traffic USB
 =========================
-La v2 était limitée par l'accès à l'ODrive via l'USB. Le délai était donc énorme:  
-    ax.active_errors            1 aller-retour a CHAQUE tour
-    ax.disarm_reason            1 aller-retour a CHAQUE tour
-    ax.pos_estimate             1 aller-retour tous les COM_PERIOD_ENC  = 2
-    ax.vel_estimate             1 aller-retour tous les COM_PERIOD_ENC  = 2
-    ax.controller.input_vel     1 aller-retour tous les COM_PERIOD      = 2
-    ax.motor.foc.Iq_measured    1 aller-retour tous les IQ_PERIOD       = 5
-
---> 54% du trafic utilisé pour lire des valeurs qui ne changent pas toujours tellement (errors par ex)
-==> Priorités inversées: consigne à CHAQUE tour (COM_PERIOD = 1), Iq désactivé
-    par défaut (IQ_PERIOD = 0), erreurs et encodeur lus tous les
-    ENC_PERIOD = ERR_PERIOD = 10 tours, soit 5 Hz.
---> 1.4 aller-retour par tour au lieu de 3.70, avec une consigne 2 x plus rapide.
-
-    ATTENTION : ENC_PERIOD = 10 signifie que l'indicateur |vel_cmd - vel_enc|
-    -- le seul chiffre qui VALIDE l'hypothese de boucle interne parfaite sur
-    laquelle repose USE_MEASURED_THETA = False -- n'est echantillonne qu'a
-    5 Hz. Pour les essais de reference destines au memoire, passer
-    ENC_PERIOD = 2 (25 Hz, 2 aller-retours par tour) : le budget USB le
-    supporte et la mesure devient exploitable.
-
-2. GAIN DE RETOUR 
-=========================
-Le gain montait avant de 0.5 à 1.0 sur une rampe de 1.5s. 
-Mais le transitoire se termine déjà à 2s, donc le banc tourne à la moitié du gain pendant la 
-fenêtre qu'on compare justement à la simulation. Tout le modèle est affecté. 
-
-Donc, GAIN_START = 1.0 par défaut. La rampe reste dispo pour le cas où la boucle se ferme sur 
-une balle qui bouge déjà, mais on peut décider de l'appliquer ou non.
-
-3. AUCUNE DONNEE FABRIQUEE DANS LE JOURNAL 
-==========================================
-Les lectures encodeurs ne sont plus extrapolées, mais fidèles. Si une mesure n'est pas faite, 
-elle est NaN. Le journal ne contient que ce qui a été réellement mesuré.
+La v2 était limitée par l'accès à l'ODrive via l'USB. Le délai était donc énorme. Attention à ce qui est demandé par cycle! 
 
 Notations 
 -----------------
@@ -353,24 +320,6 @@ def ramp_down(ax, theta_dot_cmd, cfg):
 
 def roi_from_configured_hoop(cfg):
     """Construit une ROI autour du hoop choisi.
-
-    ROI_RADIUS_PX, s'il est defini, dimensionne la ROI ; sinon
-    HOOP_RADIUS_PX, qui en etait l'unique source avant. Les deux repondent
-    a des questions differentes et T3 les a fait diverger :
-
-      HOOP_RADIUS_PX  rayon d'orbite du CENTRE de la balle. C'est lui qui
-                      entre dans le controle de TRACKING_WIN, puisque le
-                      deplacement image a image vaut r * psi_dot * dt.
-      ROI_RADIUS_PX   rayon que la ROI doit couvrir, donc l'orbite PLUS le
-                      rayon de la balle : c'est la balle entiere qui doit
-                      tenir dedans, pas seulement son centre.
-
-    Mesure de la campagne du 10/08 : avec HOOP_RADIUS_PX = 208 et
-    ROI_MARGIN = 0.05, la demi-ROI valait 218 px pour un besoin de
-    208 + 28 = 236. La balle etait rognee sur tout son parcours et se
-    trouvait a 11-14 px du bord, pour un rayon de 28, au moment ou la
-    detection lachait. T1 y echappait parce que son HOOP_RADIUS_PX = 269
-    donne 282 px -- au-dela du besoin par accident, pas par construction.
     """
     cx, cy = cfg.HOOP_CENTRE_PX
     radius = getattr(cfg, "ROI_RADIUS_PX", cfg.HOOP_RADIUS_PX)
@@ -602,11 +551,6 @@ def _arm_step1(picam2, det, roi, centre, cfg):
 
 def _arm_step2(picam2, det, roi, centre, cfg, psi_offset, psi_init_deg):
     """Mise en place de la condition initiale.
-
-    La position de lacher reelle est MESUREE et retournee : c'est elle qui
-    est journalisee, pas la valeur demandee. Un ecart de quelques degres a
-    la consigne n'invalide rien tant qu'il est connu -- la condition
-    initiale d'un essai est une donnee, pas un reglage.
     """
     print("\n[arm] ETAPE 2 : ecartez la balle a {:+.0f} deg et MAINTENEZ-LA."
           .format(psi_init_deg))
@@ -630,16 +574,6 @@ def arm(picam2, det, roi, centre, cfg, psi_init_deg):
     """Mesure l'offset camera puis amene le banc a la condition initiale.
 
     Retourne (psi_offset, psi_init_mesure_deg, diagnostics_etape1).
-
-    Etape 1 -- balle AU REPOS AU FOND. La physique impose psi = 0, donc ce
-               qui est mesure est exactement l'erreur d'alignement du centre
-               camera. Mesurer l'offset balle ecartee reviendrait a annuler
-               la condition initiale de l'essai.
-    Etape 2 -- si psi_init != 0, l'operateur ecarte la balle, le script
-               MESURE la position reelle, decompte et ferme la boucle.
-
-    Aucune condition n'interrompt le programme : chacune repropose l'etape
-    en expliquant ce qui n'allait pas.
     """
     while True:
         try:
@@ -679,51 +613,6 @@ def control_loop(ax, picam2, det, roi, centre, psi_offset,
                  estimator=None, tag="t1", gain_schedule=None,
                  phase_hook=None):
     """Boucle a LOOP_HZ, cadencee par la camera.
-
-    reference(t) -> (x_ref [4], u_ff [scalaire])
-        T1 fournit ([0,0,psi_ref,0], 0.0) ; T2 fournit la trajectoire
-        complete issue de l'inversion du modele ; T3 la lit dans le plan
-        exporte par MATLAB.
-
-    estimator : None -> derivee filtree ; sinon objet DelayCompensatedKF.
-
-    gain_schedule(t) -> K [4]
-        None (defaut) -> le K constant passe en argument est utilise a
-        chaque pas, comportement T1/T2 inchange au bit pres. T3 fournit le
-        gain TVLQR variant dans le temps. C'est la seule raison d'etre de
-        cet argument ; la chaine d'acquisition n'est pas concernee.
-
-    phase_hook(t, x, r_px) -> (x_ref [4], u_ff, K [4] ou None, phase [int])
-        None (defaut) -> reference(t) et gain_schedule(t) sont utilises,
-        comportement T1/T2/T3 inchange au bit pres.
-
-        C'EST LA SECONDE MODIFICATION QUE T4 IMPOSE, ET ELLE EST DE MEME
-        NATURE QUE LA PREMIERE. T3 avait besoin d'un gain fonction du
-        TEMPS ; T4 a besoin d'une loi fonction de L'ETAT MESURE, parce que
-        le passage de la phase 2 (vol libre) a la phase 3 (rattrapage) se
-        decide sur le rayon de la balle et non sur l'horloge : l'instant
-        du contact depend du vol reel, pas du plan. Un hook qui ne recoit
-        que t ne peut pas l'exprimer.
-
-        K = None -> u = u_ff tel quel, sans retour d'etat. C'est le vol
-        libre de T4 : rien de ce que fait le moteur ne change ou la balle
-        atterrit, donc la seule commande honnete est u = 0.
-
-    r_px, le rayon de la balle en pixels, est calcule ici parce qu'il ne
-    coute rien : psi = atan2(u_px - cx, v_px - cy) et r = hypot des deux
-    memes composantes. Il est journalise dans tous les cas, meme sans
-    phase_hook -- c'est une mesure, et une mesure gratuite ne se jette pas.
-
-    cfg.UNWRAP_PSI (defaut absent = faux)
-        Deroule psi au lieu de le laisser replie dans (-pi, pi]. Sans lui
-        un tour complet fait sauter psi de 2*pi en un pas, ce qui injecte
-        ~314 rad/s de psi_dot fantome dans le derivateur et fausse
-        l'erreur de suivi de 360 deg. Indispensable a T3, sans effet sur
-        T1/T2 qui ne quittent pas le voisinage de 0.
-
-    Signature compatible v2 : les arguments ajoutes depuis sont optionnels
-    et neutres par defaut, donc les scripts d'essai et les utilitaires de
-    diagnostic l'appellent de la meme facon.
     """
     rx, ry, rw, rh = roi
     cx, cy = centre
@@ -733,26 +622,6 @@ def control_loop(ax, picam2, det, roi, centre, psi_offset,
 
     theta0 = link.read_position()            # origine de theta, hors boucle
 
-    # --- Etat interne -----------------------------------------------------
-    # theta et theta_dot proviennent de l'INTEGRATION de u par defaut, ce qui
-    # est coherent avec l'hypothese de boucle interne parfaite sur laquelle
-    # le LQR a ete concu : le modele suppose theta_ddot = u, donc l'etat qui
-    # appartient au modele est l'integrale de u, pas la mesure. Lire
-    # l'encodeur donne le theta_dot REEL, qui traine derriere la consigne
-    # tant que la boucle interne du variateur n'est pas infiniment rapide ;
-    # le retour d'etat reagit alors a cet ecart et referme une boucle
-    # parasite autour de la dynamique de l'ODrive, non modelisee.
-    # Deroulage de psi (T3). psi_acc accumule les increments ramenes dans
-    # (-pi, pi], donc il suit la balle sur plusieurs tours. Valide tant
-    # que la balle tourne de moins d'un demi-tour ENTRE DEUX DETECTIONS
-    # REUSSIES. Sur images consecutives cela fait 25 rev/s a 50 fps, et le
-    # looping en demande 1.6 au plus. Mais psi_raw_prev n'est pas mis a
-    # jour sur une image perdue : la borne effective est
-    #     ABORT_LOST_FRAMES / (2 * LOOP_HZ)  tours,
-    # soit 0.16 tour pour 5 images a 50 fps et 1.6 rev/s. C'est
-    # ABORT_LOST_FRAMES qui protege le deroulage : ne pas le relacher pour
-    # "survivre au sommet", ce serait echanger un arret propre contre un
-    # saut de 360 deg dans psi.
     unwrap_psi = bool(getattr(cfg, "UNWRAP_PSI", False))
     psi_acc = None                  # None tant qu'aucune image n'est vue
     psi_raw_prev = 0.0
@@ -760,24 +629,7 @@ def control_loop(ax, picam2, det, roi, centre, psi_offset,
     theta_int = 0.0                 # integrale de theta_dot_hat
     theta_dot_cmd = 0.0             # integrale de u  (= consigne de vitesse)
 
-    # Estimation de la vitesse REELLE du cerceau, sans encodeur.
-    #
-    # Le modele de synthese suppose theta_ddot = u, donc que la consigne de
-    # vitesse est atteinte instantanement. Les journaux T1/T2 le confirment
-    # (|vel_cmd - vel_enc| a 0.15-0.40 rad/s RMS) et les journaux T3 le
-    # refutent (1.5-2.7 RMS, 7.7 de crete). Comme theta_int est l'INTEGRALE
-    # de cet ecart, l'etat theta fourni au retour d'etat derive de plusieurs
-    # radians sur la duree d'un looping.
-    #
-    # Deux corrections possibles. Lire l'encodeur a chaque tour coute du
-    # temps USB et referme une boucle parasite autour de la dynamique du
-    # variateur, non modelisee. Filtrer la consigne par le premier ordre
-    # identifie ne coute rien et donne au regulateur une estimation du
-    # cerceau reel plutot que de la consigne. C'est la seconde qui est
-    # retenue ici.
-    #
-    # TAU_VEL_S = 0 redonne theta_dot_hat = theta_dot_cmd et la meme
-    # integration au trapeze qu'avant : T1/T2 sont inchanges au bit pres.
+   
     tau_vel = float(getattr(cfg, "TAU_VEL_S", 0.0) or 0.0)
     theta_dot_hat = 0.0
 
@@ -794,14 +646,6 @@ def control_loop(ax, picam2, det, roi, centre, psi_offset,
     log = {k: np.full(n_max, np.nan) for k in keys}
     i = 0
 
-    # --- Chronometrage : quatre segments DISJOINTS dont la somme vaut
-    # exactement la periode de boucle.
-    #   wait  attente bloquante de l'image (capture_array)
-    #   det   detection de la balle
-    #   ctrl  loi de commande + integration (calcul pur, sans I/O)
-    #   io    acces ODrive + journal
-    # wait grand = la boucle est cadencee par la camera (bon signe).
-    # io grand   = le lien USB est le facteur limitant.
     seg = {k: 0.0 for k in ("wait", "det", "ctrl", "io")}
     seg_n = 0
 
@@ -853,18 +697,7 @@ def control_loop(ax, picam2, det, roi, centre, psi_offset,
                     stop_reason = ("balle perdue pendant {} images "
                                    "consecutives".format(lost))
                     break
-                # Commande gelee. On reemet quand meme la consigne courante :
-                # l'ODrive ne doit jamais rester sans rafraichissement.
-                #
-                # Le filtre de Kalman, lui, ne doit PAS se figer : il sait
-                # propager son etat sans mesure, et son historique de
-                # commandes doit avancer d'un cran a chaque pas de boucle,
-                # sinon la compensation de retard porte sur les mauvaises
-                # commandes des la premiere image perdue. La commande
-                # effective de ce pas est nulle (la vitesse est gelee, donc
-                # theta_ddot = 0), d'ou push_command(0.0).
-                # Le derivateur filtre, lui, se recale tout seul : dt_meas
-                # continue d'accumuler et sert au prochain echantillon.
+
                 if estimator is not None:
                     estimator.predict_open_loop(dt_meas)
                     estimator.push_command(0.0)
@@ -906,10 +739,7 @@ def control_loop(ax, picam2, det, roi, centre, psi_offset,
             dt_meas = 0.0
 
             # ---- Loi de commande ------------------------------------------
-            # gain_scale vaut 1.0 par defaut (GAIN_START = 1.0) : le retour
-            # d'etat applique le gain pour lequel il a ete synthetise, des le
-            # premier pas. La rampe reste disponible mais n'est plus subie
-            # sans le savoir -- voir l'en-tete de fichier.
+
             if cfg.GAIN_START >= 1.0:
                 gain_scale = 1.0
             else:
@@ -923,10 +753,6 @@ def control_loop(ax, picam2, det, roi, centre, psi_offset,
 
             x = np.array([theta, theta_dot, psi, psi_dot])
 
-            # La reference est evaluee ICI et non plus avant le calcul de x :
-            # phase_hook a besoin de l'etat mesure pour choisir sa phase.
-            # Sans hook, l'appel est le meme qu'avant et au meme instant
-            # logique -- reference() ne depend que de t_rel.
             phase = 0
             if phase_hook is None:
                 x_ref, u_ff = reference(t_rel)
@@ -991,11 +817,6 @@ def control_loop(ax, picam2, det, roi, centre, psi_offset,
 
             if estimator is not None:
                 estimator.push_command(u)
-
-            # ---- Journal ---------------------------------------------------
-            # theta_enc / theta_dot_enc ne sont ecrits QUE sur un tour de
-            # lecture : ailleurs ils restent NaN. Le journal ne contient que
-            # ce qui a ete mesure ; les statistiques de fin sont nan-safe.
             for key, val in (
                     ("t", t_rel), ("dt", dt),
                     ("theta", theta), ("theta_dot", theta_dot),
