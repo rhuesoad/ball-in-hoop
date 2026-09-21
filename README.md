@@ -48,5 +48,7 @@ and the printed parts in `cad/`.
 - **The model tests the ball centre only** when deciding whether it passes the
   gap, not the whole ball, so a clean mode sequence in simulation does not
   guarantee the ball clears the edge.
-- ** Hardware **: There is a play on the connection piece. Try to start from there
-   to try to get better results on the looping itself. 
+- **Hardware **: There is a play on the connection piece. Try to start from there
+   to try to get better results on the looping itself.
+- **More generally**, starting by the conclusion of the defence could help knowing 
+  where to start to make things better in this project.  
