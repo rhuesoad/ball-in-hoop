@@ -1,0 +1,13 @@
+# MATLAB
+*.asv
+matlab/cache/
+matlab/results/animations/
+
+# Runs: keep the example set, ignore new ones
+matlab/results/runs/*
+!matlab/results/runs/2026-08-29/
+
+# Python
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
